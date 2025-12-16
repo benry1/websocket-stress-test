@@ -1,0 +1,16 @@
+{
+  "name": "ws-marketdata-producer",
+  "version": "0.1.0",
+  "description": "WebSocket producer for market data gateway benchmarks",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
