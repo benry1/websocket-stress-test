@@ -18,7 +18,8 @@ go run . \
   -invalidRate 0.001 \
   -disconnectRate 0.01 \
   -sendQueue 1024 \
-  -logIntervalMs 5s
+  -logIntervalMs 5s \
+  -csv metrics.csv
 ```
 
 Connect clients to `ws://localhost:8081/stream?seed=1` (or `/burst?seed=1`, which multiplies rate by `-burstMultiplier`).
@@ -35,3 +36,4 @@ Metrics endpoint: `http://localhost:8081/metrics`.
 - `-sendQueue`: per-connection send queue; drops when full (default 1024).
 - `-burstMultiplier`: rate multiplier for `/burst` (default 2.0).
 - `-logIntervalMs`: metrics log interval (default 5s).
+- `-csv`: optional path to append metrics as CSV.

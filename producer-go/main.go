@@ -9,6 +9,8 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
+	"bufio"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -26,6 +28,7 @@ type config struct {
 	logInterval      time.Duration
 	sendQueue        int
 	burstMultiplier  float64
+	csvPath          string
 }
 
 type metrics struct {
@@ -119,6 +122,7 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.logInterval, "logIntervalMs", 5*time.Second, "metrics log interval (ms)")
 	flag.IntVar(&cfg.sendQueue, "sendQueue", 1024, "per-connection send queue (drops when full)")
 	flag.Float64Var(&cfg.burstMultiplier, "burstMultiplier", 2.0, "rate multiplier for /burst")
+	flag.StringVar(&cfg.csvPath, "csv", "", "optional path to append metrics CSV")
 	flag.Parse()
 	return cfg
 }
@@ -287,6 +291,31 @@ func logLoop(cfg config, m *metrics) {
 	ticker := time.NewTicker(cfg.logInterval)
 	defer ticker.Stop()
 	var prevSent uint64
+	var csvFile *os.File
+	var csvWriter *bufio.Writer
+	headerWritten := false
+	if cfg.csvPath != "" {
+		f, err := os.OpenFile(cfg.csvPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			log.Printf("csv open error: %v", err)
+		} else {
+			csvFile = f
+			csvWriter = bufio.NewWriter(f)
+			info, err := f.Stat()
+			if err == nil && info.Size() > 0 {
+				headerWritten = true
+			}
+		}
+	}
+	defer func() {
+		if csvWriter != nil {
+			csvWriter.Flush()
+		}
+		if csvFile != nil {
+			csvFile.Close()
+		}
+	}()
+
 	for range ticker.C {
 		total := atomic.LoadUint64(&m.messagesSent)
 		delta := total - prevSent
@@ -299,5 +328,23 @@ func logLoop(cfg config, m *metrics) {
 			atomic.LoadUint64(&m.disconnects),
 			atomic.LoadUint64(&m.backpressureDrops),
 		)
+
+		if csvWriter != nil {
+			if !headerWritten {
+				fmt.Fprintln(csvWriter, "ts,active_connections,messages_sent,delta,invalid_messages,disconnects,backpressure_drops,total_connections")
+				headerWritten = true
+			}
+			fmt.Fprintf(csvWriter, "%s,%d,%d,%d,%d,%d,%d,%d\n",
+				time.Now().UTC().Format(time.RFC3339Nano),
+				atomic.LoadInt64(&m.activeConnections),
+				total,
+				delta,
+				atomic.LoadUint64(&m.invalidMessages),
+				atomic.LoadUint64(&m.disconnects),
+				atomic.LoadUint64(&m.backpressureDrops),
+				atomic.LoadInt64(&m.totalConnections),
+			)
+			csvWriter.Flush()
+		}
 	}
 }
