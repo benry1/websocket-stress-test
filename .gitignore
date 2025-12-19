@@ -5,6 +5,8 @@ dist/
 
 # Go
 clients/go/bin/
+producer-go/bin/
+producer-go/producer-go
 
 # Rust
 clients/rust/target/
@@ -24,3 +26,4 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.csv

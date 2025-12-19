@@ -14,12 +14,15 @@ cargo run --release -- \
   --server ws://localhost:8080/stream \
   --connections 200 \
   --queue 10000 \
-  --logIntervalMs 1000
+  --logIntervalMs 1000 \
+  --csv metrics.csv
 ```
 
 Each connection appends `?seed=N` automatically; reconnects use jittered backoff. Metrics print as JSON lines to stdout.
 
 Flags support camelCase aliases (`--logIntervalMs`, `--backoffBaseMs`, `--queueSize`) and kebab variants (`--log-interval-ms`, etc.).
+
+Optional: `--csv <path>` also appends metrics as CSV.
 
 ## Metrics (JSON line per interval)
 

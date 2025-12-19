@@ -10,6 +10,8 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
 use sysinfo::System;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Instant};
@@ -33,6 +35,8 @@ struct Config {
     backoff_max_ms: u64,
     #[arg(long = "dialTimeoutMs", default_value_t = 5_000, alias = "dial-timeout-ms")]
     dial_timeout_ms: u64,
+    #[arg(long, default_value = "", alias = "csv")]
+    csv: String,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +100,7 @@ async fn main() {
     let cancel_consumer = cancel.clone();
     let consumed_clone = Arc::clone(&consumed);
     let queue_depth_consumer = Arc::clone(&queue_depth);
+    let csv_path = cfg.csv.clone();
 
     tokio::spawn(async move {
         kafka_mock(&mut rx, consumed_clone, queue_depth_consumer, cancel_consumer).await;
@@ -141,9 +146,10 @@ async fn main() {
     drop(tx);
 
     let metrics_cancel = cancel.clone();
+    let metrics_cfg = cfg.clone();
     let metrics_handle = tokio::spawn(async move {
         metrics_loop(
-            cfg,
+            metrics_cfg,
             ingest_msgs,
             parse_errors,
             validation_errors,
@@ -155,6 +161,7 @@ async fn main() {
             queue_depth,
             latencies,
             metrics_cancel,
+            csv_path,
         )
         .await;
     });
@@ -401,25 +408,43 @@ async fn metrics_loop(
     queue_depth: Arc<AtomicI64>,
     latencies: Arc<Mutex<Vec<f64>>>,
     cancel: CancellationToken,
+    csv_path: String,
 ) {
     let mut ticker = interval(Duration::from_millis(cfg.log_interval_ms.max(10)));
     let mut prev_ingest = 0;
 
-    let mut sys = System::new();
-    sys.refresh_processes();
-    let pid = sysinfo::get_current_pid().unwrap();
+    let mut sys = System::new_all();
+    let pid = sysinfo::get_current_pid().ok();
+
+    let mut csv_writer: Option<BufWriter<tokio::fs::File>> = None;
+    let mut csv_header_written = false;
+    if !csv_path.is_empty() {
+        let meta = tokio::fs::metadata(&csv_path).await.ok();
+        csv_header_written = meta.map(|m| m.len() > 0).unwrap_or(false);
+        match OpenOptions::new().create(true).append(true).open(&csv_path).await {
+            Ok(file) => {
+                csv_writer = Some(BufWriter::new(file));
+            }
+            Err(e) => {
+                eprintln!("csv open error: {e}");
+            }
+        }
+    }
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = ticker.tick() => {
-                sys.refresh_processes();
-                let cpu_pct = if let Some(proc) = sys.process(pid) {
-                    proc.cpu_usage() as f64
-                } else { 0.0 };
-                let rss_mb = if let Some(proc) = sys.process(pid) {
-                    proc.memory() as f64 / 1024.0
-                } else { 0.0 };
+                sys.refresh_all();
+                let (cpu_pct, rss_mb) = if let Some(p) = pid {
+                    if let Some(proc) = sys.process(p) {
+                        (proc.cpu_usage() as f64, proc.memory() as f64 / 1024.0)
+                    } else {
+                        (0.0, 0.0)
+                    }
+                } else {
+                    (0.0, 0.0)
+                };
 
                 let ing = ingest.load(Ordering::Relaxed);
                 let delta_ing = ing.saturating_sub(prev_ingest);
@@ -453,6 +478,33 @@ async fn metrics_loop(
                 };
                 if let Ok(line) = serde_json::to_string(&out) {
                     println!("{line}");
+                }
+                if let Some(writer) = csv_writer.as_mut() {
+                    if !csv_header_written {
+                        let _ = writer.write_all(b"ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95\n").await;
+                        csv_header_written = true;
+                    }
+                    let line = format!(
+                        "{},{},{},{},{},{},{},{},{},{},{},{},{:.4},{:.2},{:.4},{:.4}\n",
+                        out.ts,
+                        out.connections_active,
+                        out.msgs_in_total,
+                        out.msgs_in_per_sec,
+                        out.parse_errors_total,
+                        out.validation_errors,
+                        out.sequence_errors,
+                        out.reconnects_total,
+                        out.queue_depth,
+                        out.queue_capacity,
+                        out.queue_dropped_total,
+                        out.consumed_total,
+                        out.cpu_pct,
+                        out.rss_mb,
+                        out.latency_ms_p50,
+                        out.latency_ms_p95
+                    );
+                    let _ = writer.write_all(line.as_bytes()).await;
+                    let _ = writer.flush().await;
                 }
             }
         }

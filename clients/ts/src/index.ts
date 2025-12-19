@@ -1,5 +1,7 @@
 import WebSocket from "ws";
 
+import fs from "fs";
+
 type Config = {
   server: string;
   connections: number;
@@ -7,6 +9,7 @@ type Config = {
   logIntervalMs: number;
   backoffBaseMs: number;
   backoffMaxMs: number;
+  csvPath?: string;
 };
 
 type InboundMessage = {
@@ -152,6 +155,19 @@ function metricsLoop() {
   let prevCPU = process.cpuUsage();
   let prevHrtime = process.hrtime.bigint();
 
+  let csvStream: fs.WriteStream | null = null;
+  let headerWritten = false;
+  if (config.csvPath) {
+    try {
+      const exists = fs.existsSync(config.csvPath);
+      csvStream = fs.createWriteStream(config.csvPath, { flags: "a" });
+      headerWritten = exists && fs.statSync(config.csvPath).size > 0;
+    } catch (err) {
+      console.error("csv open error", err);
+      csvStream = null;
+    }
+  }
+
   const emit = () => {
     if (stopSignals.signal.aborted) return;
     const now = new Date();
@@ -192,6 +208,18 @@ function metricsLoop() {
       latency_ms_p95: p95,
     };
     process.stdout.write(JSON.stringify(out) + "\n");
+
+    if (csvStream) {
+      if (!headerWritten) {
+        csvStream.write("ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95\n");
+        headerWritten = true;
+      }
+      csvStream.write(
+        `${out.ts},${out.connections_active},${out.msgs_in_total},${out.msgs_in_per_sec},${out.parse_errors_total},${out.validation_errors},${out.sequence_errors},${out.reconnects_total},${out.queue_depth},${out.queue_capacity},${out.queue_dropped_total},${out.consumed_total},${out.cpu_pct.toFixed(
+          4
+        )},${out.rss_mb.toFixed(2)},${out.latency_ms_p50.toFixed(4)},${out.latency_ms_p95.toFixed(4)}\n`
+      );
+    }
     setTimeout(emit, config.logIntervalMs);
   };
 
@@ -275,6 +303,9 @@ function parseArgs(argv: string[]): Config {
       case "backoffMaxMs":
         out.backoffMaxMs = Number(val);
         break;
+      case "csv":
+        out.csvPath = val;
+        break;
     }
   }
   return {
@@ -284,6 +315,7 @@ function parseArgs(argv: string[]): Config {
     logIntervalMs: out.logIntervalMs ?? 1000,
     backoffBaseMs: out.backoffBaseMs ?? 200,
     backoffMaxMs: out.backoffMaxMs ?? 5000,
+    csvPath: out.csvPath,
   };
 }
 

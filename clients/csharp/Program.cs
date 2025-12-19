@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -11,7 +12,8 @@ record Config(
     int LogIntervalMs,
     int BackoffBaseMs,
     int BackoffMaxMs,
-    int DialTimeoutMs
+    int DialTimeoutMs,
+    string? CsvPath
 );
 
 record InboundMessage(long ts, long seq, string symbol, double price, double size);
@@ -210,6 +212,25 @@ class Program
         var prevCpu = proc.TotalProcessorTime;
         var prevWall = Stopwatch.GetTimestamp();
 
+        StreamWriter? csv = null;
+        var headerWritten = false;
+        if (!string.IsNullOrWhiteSpace(cfg.CsvPath))
+        {
+            try
+            {
+                var exists = File.Exists(cfg.CsvPath);
+                csv = new StreamWriter(new FileStream(cfg.CsvPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+                {
+                    AutoFlush = true
+                };
+                headerWritten = exists && new FileInfo(cfg.CsvPath).Length > 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"csv open error: {ex.Message}");
+            }
+        }
+
         try
         {
             while (await ticker.WaitForNextTickAsync(token))
@@ -251,11 +272,47 @@ class Program
                 };
 
                 Console.WriteLine(JsonSerializer.Serialize(output));
+                if (csv != null)
+                {
+                    if (!headerWritten)
+                    {
+                        await csv.WriteLineAsync("ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95");
+                        headerWritten = true;
+                    }
+
+                    await csv.WriteLineAsync(string.Format(
+                        "{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12:F4},{13:F2},{14:F4},{15:F4}",
+                        output["ts"],
+                        output["connections_active"],
+                        output["msgs_in_total"],
+                        output["msgs_in_per_sec"],
+                        output["parse_errors_total"],
+                        output["validation_errors"],
+                        output["sequence_errors"],
+                        output["reconnects_total"],
+                        output["queue_depth"],
+                        output["queue_capacity"],
+                        output["queue_dropped_total"],
+                        output["consumed_total"],
+                        output["cpu_pct"],
+                        output["rss_mb"],
+                        output["latency_ms_p50"],
+                        output["latency_ms_p95"]
+                    ));
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // shutdown
+        }
+        finally
+        {
+            if (csv != null)
+            {
+                await csv.FlushAsync();
+                await csv.DisposeAsync();
+            }
         }
     }
 
@@ -368,7 +425,8 @@ class Program
         int backoffBase = dict.TryGetValue("backoffBaseMs", out var bb) && int.TryParse(bb, out var bbi) ? bbi : 200;
         int backoffMax = dict.TryGetValue("backoffMaxMs", out var bm) && int.TryParse(bm, out var bmi) ? bmi : 5000;
         int dialTimeout = dict.TryGetValue("dialTimeoutMs", out var dt) && int.TryParse(dt, out var dti) ? dti : 5000;
+        string? csvPath = dict.TryGetValue("csv", out var csv) ? csv : null;
 
-        return new Config(server, connections, queueSize, logIntervalMs, backoffBase, backoffMax, dialTimeout);
+        return new Config(server, connections, queueSize, logIntervalMs, backoffBase, backoffMax, dialTimeout, csvPath);
     }
 }
