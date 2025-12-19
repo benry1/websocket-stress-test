@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	json "github.com/goccy/go-json"
 	"nhooyr.io/websocket"
 )
 
