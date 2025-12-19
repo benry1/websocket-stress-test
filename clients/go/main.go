@@ -10,6 +10,8 @@ import (
 	"math/rand"
 	"net/url"
 	"os/signal"
+	"os"
+	"bufio"
 	"runtime"
 	"runtime/metrics"
 	"sort"
@@ -29,6 +31,7 @@ type config struct {
 	backoffBase  time.Duration
 	backoffMax   time.Duration
 	dialTimeout  time.Duration
+	csvPath      string
 }
 
 type inboundMessage struct {
@@ -94,7 +97,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		metricsLoop(ctx, queue, latencyCh, cfg.logInterval)
+		metricsLoop(ctx, queue, latencyCh, cfg.logInterval, cfg.csvPath)
 	}()
 
 	<-ctx.Done()
@@ -128,6 +131,7 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.backoffBase, "backoffBase", 200*time.Millisecond, "reconnect backoff base")
 	flag.DurationVar(&cfg.backoffMax, "backoffMax", 5*time.Second, "reconnect backoff max")
 	flag.DurationVar(&cfg.dialTimeout, "dialTimeout", 5*time.Second, "dial timeout")
+	flag.StringVar(&cfg.csvPath, "csv", "", "optional path to append CSV metrics")
 	flag.Parse()
 	return cfg
 }
@@ -297,12 +301,37 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-func metricsLoop(ctx context.Context, queue chan kafkaRecord, latencyCh <-chan time.Duration, interval time.Duration) {
+func metricsLoop(ctx context.Context, queue chan kafkaRecord, latencyCh <-chan time.Duration, interval time.Duration, csvPath string) {
 	if interval <= 0 {
 		interval = time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	var csvWriter *os.File
+	var csvBuf *bufio.Writer
+	headerWritten := false
+	if csvPath != "" {
+		f, err := os.OpenFile(csvPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			log.Printf("csv open error: %v", err)
+		} else {
+			csvWriter = f
+			csvBuf = bufio.NewWriter(f)
+			info, err := f.Stat()
+			if err == nil && info.Size() > 0 {
+				headerWritten = true
+			}
+		}
+	}
+	defer func() {
+		if csvBuf != nil {
+			csvBuf.Flush()
+		}
+		if csvWriter != nil {
+			csvWriter.Close()
+		}
+	}()
 
 	var prevIngest uint64
 	var prevCPU time.Duration
@@ -352,6 +381,32 @@ func metricsLoop(ctx context.Context, queue chan kafkaRecord, latencyCh <-chan t
 				continue
 			}
 			fmt.Println(string(b))
+
+			if csvBuf != nil {
+				if !headerWritten {
+					fmt.Fprintf(csvBuf, "ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95\n")
+					headerWritten = true
+				}
+				fmt.Fprintf(csvBuf, "%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.4f,%.2f,%.4f,%.4f\n",
+					out["ts"],
+					out["connections_active"],
+					out["msgs_in_total"],
+					out["msgs_in_per_sec"],
+					out["parse_errors_total"],
+					out["validation_errors"],
+					out["sequence_errors"],
+					out["reconnects_total"],
+					out["queue_depth"],
+					out["queue_capacity"],
+					out["queue_dropped_total"],
+					out["consumed_total"],
+					out["cpu_pct"],
+					out["rss_mb"],
+					out["latency_ms_p50"],
+					out["latency_ms_p95"],
+				)
+				csvBuf.Flush()
+			}
 		}
 	}
 }

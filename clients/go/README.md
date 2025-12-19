@@ -14,7 +14,8 @@ go run . \
   -server ws://localhost:8080/stream \
   -connections 200 \
   -queue 10000 \
-  -logInterval 1s
+  -logInterval 1s \
+  -csv metrics.csv
 ```
 
 Each connection appends `?seed=N` automatically; reconnects use jittered backoff. Metrics print periodically to stdout.
@@ -29,3 +30,5 @@ JSON line per `-logInterval` (default 1s) with:
 - queue_depth, queue_capacity, queue_dropped_total, consumed_total
 - cpu_pct, rss_mb
 - latency_ms_p50/p95 (message handling)
+
+Optional: `-csv <path>` also appends metrics as CSV.
