@@ -438,7 +438,7 @@ async fn metrics_loop(
                 sys.refresh_all();
                 let (cpu_pct, rss_mb) = if let Some(p) = pid {
                     if let Some(proc) = sys.process(p) {
-                        (proc.cpu_usage() as f64, proc.memory() as f64 / 1024.0)
+                        (proc.cpu_usage() as f64, proc.memory() as f64 / (1024.0 * 1024.0))
                     } else {
                         (0.0, 0.0)
                     }
