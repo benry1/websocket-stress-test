@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-
+import simdjson from "simdjson";
 import fs from "fs";
 
 type Config = {
@@ -93,7 +93,7 @@ function manageConnection(idx: number) {
       const text = typeof data === "string" ? data : data.toString("utf8");
       let msg: InboundMessage;
       try {
-        msg = JSON.parse(text);
+        msg = simdjson.parse(text);
       } catch {
         parseErrors += 1;
         return;
@@ -181,7 +181,8 @@ function metricsLoop() {
     const intervalNs = Number(nowHr - prevHrtime);
     prevHrtime = nowHr;
     const intervalSec = intervalNs / 1e9;
-    const cpuPct = ((usage.user + usage.system) / 1e6) / (intervalSec || 1) * 100;
+    const cpuPct =
+      ((usage.user + usage.system) / 1e6 / (intervalSec || 1)) * 100;
 
     const rssMb = process.memoryUsage().rss / (1024 * 1024);
 
@@ -211,13 +212,21 @@ function metricsLoop() {
 
     if (csvStream) {
       if (!headerWritten) {
-        csvStream.write("ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95\n");
+        csvStream.write(
+          "ts,connections_active,msgs_in_total,msgs_in_per_sec,parse_errors_total,validation_errors,sequence_errors,reconnects_total,queue_depth,queue_capacity,queue_dropped_total,consumed_total,cpu_pct,rss_mb,latency_ms_p50,latency_ms_p95\n"
+        );
         headerWritten = true;
       }
       csvStream.write(
-        `${out.ts},${out.connections_active},${out.msgs_in_total},${out.msgs_in_per_sec},${out.parse_errors_total},${out.validation_errors},${out.sequence_errors},${out.reconnects_total},${out.queue_depth},${out.queue_capacity},${out.queue_dropped_total},${out.consumed_total},${out.cpu_pct.toFixed(
-          4
-        )},${out.rss_mb.toFixed(2)},${out.latency_ms_p50.toFixed(4)},${out.latency_ms_p95.toFixed(4)}\n`
+        `${out.ts},${out.connections_active},${out.msgs_in_total},${
+          out.msgs_in_per_sec
+        },${out.parse_errors_total},${out.validation_errors},${
+          out.sequence_errors
+        },${out.reconnects_total},${out.queue_depth},${out.queue_capacity},${
+          out.queue_dropped_total
+        },${out.consumed_total},${out.cpu_pct.toFixed(4)},${out.rss_mb.toFixed(
+          2
+        )},${out.latency_ms_p50.toFixed(4)},${out.latency_ms_p95.toFixed(4)}\n`
       );
     }
     setTimeout(emit, config.logIntervalMs);
@@ -276,7 +285,11 @@ function parseArgs(argv: string[]): Config {
     const [k, vInline] = arg.split("=");
     const key = k.replace(/^--/, "");
     let val = vInline;
-    if (val === undefined && i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+    if (
+      val === undefined &&
+      i + 1 < argv.length &&
+      !argv[i + 1].startsWith("--")
+    ) {
       val = argv[++i];
     }
     if (!val) continue;
