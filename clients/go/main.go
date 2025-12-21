@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -8,9 +9,8 @@ import (
 	"log"
 	"math/rand"
 	"net/url"
-	"os/signal"
 	"os"
-	"bufio"
+	"os/signal"
 	"runtime"
 	"runtime/metrics"
 	"sort"
@@ -32,6 +32,7 @@ type config struct {
 	backoffMax   time.Duration
 	dialTimeout  time.Duration
 	csvPath      string
+	kafkaWorkers int
 }
 
 type inboundMessage struct {
@@ -77,12 +78,18 @@ func main() {
 	var wg sync.WaitGroup
 	latencyCh := make(chan time.Duration, 100000)
 
-	// Kafka mock consumer.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		kafkaMock(ctx, queue)
-	}()
+	// Kafka mock consumers.
+	workers := cfg.kafkaWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			kafkaMock(ctx, queue)
+		}()
+	}
 
 	// Connection manager.
 	for i := 0; i < cfg.connections; i++ {
@@ -132,6 +139,7 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.backoffMax, "backoffMax", 5*time.Second, "reconnect backoff max")
 	flag.DurationVar(&cfg.dialTimeout, "dialTimeout", 5*time.Second, "dial timeout")
 	flag.StringVar(&cfg.csvPath, "csv", "", "optional path to append CSV metrics")
+	flag.IntVar(&cfg.kafkaWorkers, "kafkaWorkers", runtime.NumCPU(), "number of kafka mock consumer goroutines")
 	flag.Parse()
 	return cfg
 }
@@ -358,22 +366,22 @@ func metricsLoop(ctx context.Context, queue chan kafkaRecord, latencyCh <-chan t
 			rssMB := rssMegabytes()
 
 			out := map[string]any{
-				"ts":                   now.UTC().Format(time.RFC3339Nano),
-				"connections_active":   atomic.LoadInt64(&activeConns),
-				"msgs_in_total":        ing,
-				"msgs_in_per_sec":      deltaIngest,
-				"parse_errors_total":   atomic.LoadUint64(&parseErrors),
-				"validation_errors":    atomic.LoadUint64(&validationError),
-				"sequence_errors":      atomic.LoadUint64(&sequenceErrors),
-				"reconnects_total":     atomic.LoadUint64(&reconnects),
-				"queue_depth":          len(queue),
-				"queue_capacity":       cap(queue),
-				"queue_dropped_total":  atomic.LoadUint64(&produceDropped),
-				"consumed_total":       atomic.LoadUint64(&consumed),
-				"cpu_pct":              cpuPct,
-				"rss_mb":               rssMB,
-				"latency_ms_p50":       float64(p50.Microseconds()) / 1000,
-				"latency_ms_p95":       float64(p95.Microseconds()) / 1000,
+				"ts":                  now.UTC().Format(time.RFC3339Nano),
+				"connections_active":  atomic.LoadInt64(&activeConns),
+				"msgs_in_total":       ing,
+				"msgs_in_per_sec":     deltaIngest,
+				"parse_errors_total":  atomic.LoadUint64(&parseErrors),
+				"validation_errors":   atomic.LoadUint64(&validationError),
+				"sequence_errors":     atomic.LoadUint64(&sequenceErrors),
+				"reconnects_total":    atomic.LoadUint64(&reconnects),
+				"queue_depth":         len(queue),
+				"queue_capacity":      cap(queue),
+				"queue_dropped_total": atomic.LoadUint64(&produceDropped),
+				"consumed_total":      atomic.LoadUint64(&consumed),
+				"cpu_pct":             cpuPct,
+				"rss_mb":              rssMB,
+				"latency_ms_p50":      float64(p50.Microseconds()) / 1000,
+				"latency_ms_p95":      float64(p95.Microseconds()) / 1000,
 			}
 			b, err := json.Marshal(out)
 			if err != nil {
@@ -451,7 +459,7 @@ func rssMegabytes() float64 {
 	samples := make([]metrics.Sample, 1)
 	samples[0].Name = rssSample
 	metrics.Read(samples)
-	
+
 	// metrics.Value has a Kind() method to determine type
 	if samples[0].Value.Kind() == metrics.KindUint64 {
 		if v := samples[0].Value.Uint64(); v > 0 {
